@@ -18,35 +18,38 @@ def main(infile, outfile, reference, motif_list, seq_type='dna'):
 
     vcf_file = read_input(infile)
     sequence = str(SeqIO.read(reference,"fasta").seq)
-    motif_list = validate_motifs(motif_list, seq_type)
-    partner_motif_list = [motif_revcomp(motif, seq_type)
-                          if motif_revcomp(motif, seq_type) != motif else None
-                          for motif in motif_list ]
-    max_motif_size = motif_len(max(motif_list, key=motif_len))
+    
+    for motif in motif_list:
+       process_motifs(vcf_file, motif, sequence)
+
+def process_motifs(vcf_file, motif, sequence):
+    motif = validate_motifs(motif, seq_type='dna')
+    partner_motif = [motif_revcomp(motif, seq_type='dna')
+                          if motif_revcomp(motif, seq_type='dna') != motif else None]
+    max_motif_size = motif_len(motif) - 1
     variant_neighborhoods = gerrymander(vcf_file, max_motif_size)
 
-    motif_counts = {motif:{} for motif in motif_list}
+    motif_counts = {motif:{}}
 
-    for neighborhood in variant_neighborhoods:
-        for motif, partner in zip(motif_list, partner_motif_list):
-            variant_position = neighborhood[0].pos
-            reference_motifs = motifs(
-                reference_segment(neighborhood,sequence,max_motif_size),
-                motif,
-                partner,
-            )
-            variant_motifs = motifs(
-                variant_segment(neighborhood,sequence,max_motif_size),
-                motif,
-                partner,
-            )
-            motif_counts[motif][variant_position] = dict()
-            for strand in ['.','+','-']:
-                if not (reference_motifs[strand] == 0 and variant_motifs[strand] == 0):
-                    motif_counts[motif][variant_position][strand] = dict(
-                        reference=reference_motifs[strand],
-                        query=variant_motifs[strand],
-                    )
+    for neighborhood in variant_neighborhoods: 
+        variant_position = neighborhood[0].pos
+        reference_motifs = motifs(
+            reference_segment(neighborhood,sequence,max_motif_size),
+            motif,
+            partner_motif,
+        )
+        variant_motifs = motifs(
+            variant_segment(neighborhood,sequence,max_motif_size),
+            motif,
+            partner_motif,
+        )
+        motif_counts[motif][variant_position] = dict()
+        for strand in ['.','+','-']:
+            if not (reference_motifs[strand] == 0 and variant_motifs[strand] == 0):
+                motif_counts[motif][variant_position][strand] = dict(
+                    reference=reference_motifs[strand],
+                    query=variant_motifs[strand],
+                )
     print_motif_summary(motif_counts)
 
 def read_input(infile):
@@ -59,46 +62,35 @@ def read_input(infile):
         sys.exit(1)
     return pysam.VariantFile(infile, mode)
 
-def validate_motifs(motif_list, seq_type):
+def validate_motifs(motif, seq_type):
     '''
     Check validity of the input motifs and standardize their format
 
     Takes an list of motif strings as input and returns them as
     a list of regular expressions.
     '''
-
-    bad_motifs = []
-
-    for i in range(len(motif_list)):
-        original_string = motif_list[i]
         # The input regular expression should be simple, containing only brackets
         # and characters within our target alphabet.
         # This check can be improved.
-        if re.search('[\d\.\{\}\(\)\\\\]',motif_list[i]):
-            print(("Motif submitted as {} is invalid."
+    if re.search('[\d\.\{\}\(\)\\\\]',motif):
+        print(("Motif submitted as {} is invalid."
                   " Please use simple regular expressions and/or IUPAC ambiguity codes.").format(original_string),
                   file=sys.stderr)
-            bad_motifs += motif_list[i]
-            continue
-        motif_list[i] = iupac2regex(motif_list[i], seq_type)
-        try:
-            re.compile(motif_list[i])
-        except re.error:
-            print(("Error: Motif submitted as {} was converted to the invalid regular expression {}."
+    motif = iupac2regex(motif, seq_type)
+    try:
+        re.compile(motif)
+    except re.error:
+        print(("Error: Motif submitted as {} was converted to the invalid regular expression {}."
                   " Please report this problem. The motif will be skipped for now.").format(original_string,motif_list[i]),
                   file=sys.stderr)
-            del motif_list[i]
+        del motif
 
-    if bad_motifs:
-        print("At least one motif provided was invalid. Please correct your inputs and try again.",
-              file=sys.stderr)
-        sys.exit(1)
-    elif not motif_list:
+    if not motif:
         print("There are no valid motifs to process.",
               file=sys.stderr)
         sys.exit(1)
 
-    return motif_list
+    return motif
 
 
 # Define a dictionary to map IUPAC ambiguity codes to regular expressions.
@@ -214,10 +206,9 @@ def variant_segment(neighborhood, sequence, radius):
         seq_suffix = segment[local_position:].replace(
             variant.ref,variant.alts[0],1)
         variant_segment = seq_prefix + seq_suffix
-
     return variant_segment
 
-def motifs(sequence, motif, partner):
+def motifs(sequence, motif, partner_motif):
     '''
     Find the number of motifs in a given sequence
 
@@ -228,8 +219,9 @@ def motifs(sequence, motif, partner):
     default_strand = '.'
     matches = re.findall(motif, sequence)
 
-    if partner:
-        partner_matches = re.findall(partner, sequence)
+    if partner_motif:
+        partner_motif = str(partner_motif)
+        partner_matches = re.findall(partner_motif, sequence)
         results['-'] = len(partner_matches)
         default_strand = '+'
 
